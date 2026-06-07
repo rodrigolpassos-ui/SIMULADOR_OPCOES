@@ -159,8 +159,8 @@ tr:hover td{background:var(--surface2);}
 .result-value.unlimited{color:var(--accent2);font-size:0.85rem;}
 
 /* ── CHART ── */
-.chart-wrap{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:1rem;position:relative;height:280px;}
-.chart-wrap canvas{max-height:250px;}
+.chart-wrap{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:1rem;position:relative;height:310px;}
+.chart-wrap canvas{max-height:280px;}
 
 /* ── STRATEGY SELECTOR ── */
 .strategy-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem;margin-bottom:1rem;}
@@ -443,7 +443,7 @@ tr:hover td{background:var(--surface2);}
       <div class="result-card"><div class="result-label">Perda Máxima</div><div class="result-value neg" id="rPerda">—</div></div>
       <div class="result-card"><div class="result-label">Break-Even</div><div class="result-value neutral" id="rBE">—</div></div>
       <div class="result-card" title="Estimativa: se há hedge (spread/coberta), usa a perda máxima da estrutura. Se venda descoberta, usa ~20% do nocional (strike × qtd). A margem real da B3 usa SPAN."><div class="result-label">Margem Aprox. ⓘ</div><div class="result-value neutral" id="rMargem">R$ 0,00</div></div>
-      <div class="result-card highlight" title="Para spreads: largura do spread × qtd (risco máximo de exercício). Para posições simples: strike × qtd."><div class="result-label">Notional Máx ⓘ</div><div class="result-value neutral" id="rNotional">R$ 0,00</div></div>
+      <div class="result-card highlight" title="Capital máximo em risco no exercício. Para estruturas de risco limitado (travas, condores, compra de opções): igual à perda máxima possível. Para vendas a descoberto (call/ativo sem cobertura): exposição nocional das pernas vendidas (strike × qtd), pois a perda é teoricamente ilimitada."><div class="result-label">Notional Máx ⓘ</div><div class="result-value neutral" id="rNotional">R$ 0,00</div></div>
     </div>
 
     <!-- Chart -->
@@ -1054,7 +1054,14 @@ function renderGregas(){
 //  BLACK-SCHOLES
 // ══════════════════════════════════════════
 function blackScholes(S, K, T, r, sigma, tipo){
-  if(T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return {price:0,delta:tipo==='call'?1:0,gamma:0,theta:0,vega:0,rho:0};
+  // Casos-limite: sem tempo, sem vol ou preço/strike inválidos → a opção vale o INTRÍNSECO,
+  // não zero. Importante p/ S→0: uma PUT vale ~K nesse ponto (não 0). Devolver 0 aqui
+  // criava um ponto despencado na curva "Hoje" quando a grade amostrava o preço zero.
+  if(T <= 0 || sigma <= 0 || S <= 0 || K <= 0){
+    const intrinsic = tipo === 'call' ? Math.max(0, S - K) : Math.max(0, K - S);
+    const deltaLim = tipo === 'call' ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
+    return {price:intrinsic, delta:deltaLim, gamma:0, theta:0, vega:0, rho:0};
+  }
   const d1 = (Math.log(S/K) + (r + sigma*sigma/2)*T) / (sigma*Math.sqrt(T));
   const d2 = d1 - sigma*Math.sqrt(T);
   const nd1 = N(d1), nd2 = N(d2), pnd1 = N(-d1), pnd2 = N(-d2);
@@ -1160,6 +1167,29 @@ function calcPayoff(spotAtExpiry){
   return pnl;
 }
 
+// P&L "Hoje" — precifica cada perna via Black-Scholes com o tempo restante.
+// Retorna null se não houver dados suficientes (sem vol/dias) para precificar.
+function calcPayoffToday(spotNow){
+  let pnl = 0;
+  let temOpcao = false, temDados = true;
+  for(const p of positions){
+    const mult = p.op === 'compra' ? 1 : -1;
+    if(p.tipo === 'ativo'){
+      pnl += mult * (spotNow - p.preco) * p.qtd;
+    } else if(p.tipo === 'call' || p.tipo === 'put'){
+      temOpcao = true;
+      const dias = p.dias || 0;
+      const vol  = p.vol  || 0;
+      if(dias <= 0 || vol <= 0){ temDados = false; continue; }
+      const T = dias/365;
+      const teorico = blackScholes(spotNow, p.strike, T, currentSelic, vol/100, p.tipo).price;
+      pnl += mult * (teorico - p.preco) * p.qtd;
+    }
+  }
+  if(temOpcao && !temDados) return null; // falta vol/dias em alguma perna
+  return pnl;
+}
+
 function updateResults(){
   if(!positions.length){
     document.getElementById('rCusto').textContent = 'R$ 0,00';
@@ -1172,41 +1202,50 @@ function updateResults(){
     return;
   }
   const S = currentPrice || positions[0].preco || 50;
-  const range = S > 0 ? S : 50;
+  // Limites da grade: cobrem o spot ±50% E todos os strikes/preços da estrutura, com folga,
+  // garantindo que o ganho/perda máximo capture os platôs mesmo com strikes longe do spot.
+  const refs = [S];
+  for(const p of positions){
+    if(p.strike > 0) refs.push(p.strike);
+    if(p.tipo === 'ativo' && p.preco > 0) refs.push(p.preco);
+  }
+  let lo = Math.min(S*0.5, ...refs) * 0.85;
+  let hi = Math.max(S*1.5, ...refs) * 1.15;
+  if(lo < 0) lo = 0;
+  if(!(hi > lo)) { lo = 0; hi = (S||50)*2; }
+  const N_PTS = 240;
   const spots = [];
-  for(let i = -0.5; i <= 0.5; i += 0.005) spots.push(+(range*(1+i)).toFixed(4));
+  for(let i = 0; i <= N_PTS; i++) spots.push(+(lo + (hi-lo)*i/N_PTS).toFixed(4));
+  // Inclui os strikes exatos (e o spot) na grade: os vértices do payoff caem nos strikes,
+  // então amostrá-los garante ganho/perda máximo precisos (sem erro de ~R$ entre pontos).
+  for(const p of positions){ if(p.strike > 0) spots.push(p.strike); }
+  // Puts e qualquer posição em ativo têm o extremo de P&L no preço ZERO — amostra sempre.
+  const temPutOuAtivo = positions.some(p => p.tipo === 'put' || p.tipo === 'ativo');
+  if(lo === 0 || temPutOuAtivo) spots.push(0);
+  spots.sort((a,b)=>a-b);
 
   const payoffs = spots.map(s=>calcPayoff(s));
   const maxPnl = Math.max(...payoffs);
   const minPnl = Math.min(...payoffs);
 
-  // Detecta ganho/perda ilimitada pela estrutura real da posição
-  const callsCompra = positions.filter(p=>p.tipo==='call'&&p.op==='compra');
-  const callsVenda  = positions.filter(p=>p.tipo==='call'&&p.op==='venda');
-  const putsCompra  = positions.filter(p=>p.tipo==='put' &&p.op==='compra');
-  const putsVenda   = positions.filter(p=>p.tipo==='put' &&p.op==='venda');
-  const ativoCompra = positions.some(p=>p.tipo==='ativo'&&p.op==='compra');
-  const ativoVenda  = positions.some(p=>p.tipo==='ativo'&&p.op==='venda');
-
-  // GANHO ILIMITADO: call comprada sem call vendida que a limite acima
-  //                  OU put vendida sem put comprada que a limite abaixo
-  //                  OU compra de ativo
-  const callCompraDescoberta = callsCompra.length > 0 && callsVenda.length === 0;
-  const callCompraComVendaAcima = callsCompra.length > 0 && callsVenda.length > 0 &&
-    Math.min(...callsVenda.map(x=>x.strike)) > Math.min(...callsCompra.map(x=>x.strike));
-  // put vendida descoberta = ganho limitado ao prêmio (put não tem ganho ilimitado na alta)
-  const isUnlimitedGain = callCompraDescoberta || callCompraComVendaAcima || ativoCompra;
-
-  // PERDA ILIMITADA: call vendida sem call comprada que a cubra
-  //                  OU put vendida descoberta (preço cai a zero = perda = strike × qtd)
-  //                  OU venda de ativo
-  // NOTA: compra de put NÃO tem perda ilimitada (perda = prêmio pago)
-  //       compra de call NÃO tem perda ilimitada (perda = prêmio pago)
-  const callVendaDescoberta = callsVenda.length > 0 && callsCompra.length === 0;
-  const callVendaSemCobertura = callsVenda.length > 0 && callsCompra.length > 0 &&
-    Math.min(...callsCompra.map(x=>x.strike)) > Math.min(...callsVenda.map(x=>x.strike));
-  const putVendaDescoberta = putsVenda.length > 0 && putsCompra.length === 0 && !ativoCompra;
-  const isUnlimitedLoss = callVendaDescoberta || callVendaSemCobertura || putVendaDescoberta || ativoVenda;
+  // GANHO/PERDA ILIMITADA pela INCLINAÇÃO ASSINTÓTICA do payoff (correto p/ travas,
+  // butterflies, condors etc., não só posições simples). slopeUp = inclinação acima de
+  // todos os strikes (define a ALTA); slopeDown = inclinação abaixo (define a BAIXA).
+  // IMPORTANTE: na baixa o preço tem PISO em zero, então slopeDown<0 NÃO significa ganho
+  // ilimitado (ex.: put comprada — ganho máx = strike−prêmio). Só a ALTA é ilimitada de fato.
+  let slopeUp = 0, slopeDown = 0;
+  for(const p of positions){
+    const sign = p.op === 'compra' ? 1 : -1;
+    if(p.tipo === 'ativo'){ slopeUp += sign*p.qtd; slopeDown += sign*p.qtd; }
+    else if(p.tipo === 'call'){ slopeUp += sign*p.qtd; }
+    else if(p.tipo === 'put'){ slopeDown += -sign*p.qtd; }
+  }
+  const _EPS = 1e-9;
+  // Ganho ilimitado: só pela ALTA (slopeUp>0). A baixa é limitada pelo piso de preço zero.
+  const isUnlimitedGain = slopeUp > _EPS;
+  // Perda ilimitada: pela ALTA (slopeUp<0). Pela baixa, perda é grande mas finita (piso zero),
+  // por isso usa-se minPnl real; mantemos -∞ apenas quando a alta é descoberta.
+  const isUnlimitedLoss = slopeUp < -_EPS;
 
   // Cost (initial debit/credit)
   let cost = 0;
@@ -1266,34 +1305,22 @@ function updateResults(){
       bes.push(strikeCall + totalPremio);  // BE alto
     }
   }
-  // Notional máx = maior exposição nocional da estrutura (strike maior × qtd maior, ou preço do ativo × qtd)
-  // Para spreads: diferença entre strikes × qtd (representa o risco máximo de exercício)
-  // Para posições simples: strike (ou preço) × qtd
-  let notional;
-  const hasOptions = positions.some(p => p.tipo === 'call' || p.tipo === 'put');
-  if(hasOptions){
-    // Detecta spread: há compra e venda de mesma direção (call ou put)
-    const callCompra = positions.filter(p=>p.tipo==='call'&&p.op==='compra');
-    const callVenda  = positions.filter(p=>p.tipo==='call'&&p.op==='venda');
-    const putCompra  = positions.filter(p=>p.tipo==='put'&&p.op==='compra');
-    const putVenda   = positions.filter(p=>p.tipo==='put'&&p.op==='venda');
-    const isSpread = (callCompra.length && callVenda.length) || (putCompra.length && putVenda.length);
-    if(isSpread){
-      // Notional = diferença máxima entre strikes × qtd máx (largura do spread × qtd)
-      const allStrikes = positions.filter(p=>p.strike>0).map(p=>p.strike);
-      const strikeDiff = allStrikes.length >= 2 ? Math.max(...allStrikes) - Math.min(...allStrikes) : 0;
-      const maxQtd2 = Math.max(...positions.map(p=>p.qtd));
-      notional = strikeDiff * maxQtd2;
-    } else {
-      // Posição simples: maior strike ou preço × qtd
-      notional = positions.reduce((s,p)=>{
-        const base = (p.tipo==='call'||p.tipo==='put') ? (p.strike||p.preco) : p.preco;
-        return s + base * p.qtd;
-      }, 0);
-    }
+  // NOTIONAL = CAPITAL MÁXIMO EM RISCO no exercício (lado da perda da estrutura).
+  //  - Perda limitada (travas, condores, comprador puro, put/ativo descoberto com piso 0):
+  //      usa |perda máxima| — quanto a estrutura pode custar no pior exercício.
+  //  - Perda ILIMITADA na alta (call vendida descoberta, ativo vendido a descoberto):
+  //      usa a exposição nocional das pernas vendidas (capital de fato em risco).
+  let notional, notionalDescoberto;
+  if(isUnlimitedLoss){
+    // perda cresce sem teto → reporta exposição das vendas a descoberto
+    notional = positions.filter(p=>p.op==='venda').reduce((s,p)=>{
+      const base = (p.tipo==='call'||p.tipo==='put') ? (p.strike||p.preco) : p.preco;
+      return s + base * p.qtd;
+    }, 0);
+    notionalDescoberto = true;
   } else {
-    // Apenas ativo
-    notional = positions.reduce((s,p)=>s+p.preco*p.qtd, 0);
+    notional = Math.abs(Math.min(0, minPnl));
+    notionalDescoberto = false;
   }
 
   // Margem estimada (B3 usa SPAN; esta é apenas uma estimativa):
@@ -1321,15 +1348,27 @@ function updateResults(){
     return `R$ ${fmt(b)}${pct}`;
   }).join(' / ') : '—';
   document.getElementById('rMargem').textContent = `R$ ${fmt(margem)}`;
-  document.getElementById('rNotional').textContent = `R$ ${fmt(notional)}`;
+  document.getElementById('rNotional').innerHTML = notionalDescoberto
+    ? `R$ ${fmt(notional)} <span style="font-size:0.6rem;color:var(--neg,#ff3d5a);font-family:var(--mono);">descoberto</span>`
+    : `R$ ${fmt(notional)}`;
 
-  updateChart(spots, payoffs);
+  // Curva "Hoje" (teórica). null em cada ponto se não houver dados → linha some.
+  const todayRaw = spots.map(s => calcPayoffToday(s));
+  const hasToday = todayRaw.some(v => v !== null);
+  const todays = hasToday ? todayRaw : null;
+
+  updateChart(spots, payoffs, {
+    spot: currentPrice || null,
+    bes: bes,
+    today: todays,
+    strikes: positions.filter(p=>p.strike>0).map(p=>p.strike)
+  });
 }
 
 // ══════════════════════════════════════════
 //  CHART
 // ══════════════════════════════════════════
-function updateChart(spots, payoffs){
+function updateChart(spots, payoffs, extra){
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
   const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
   const textColor = isDark ? '#556070' : '#8a9ab0';
@@ -1342,44 +1381,180 @@ function updateChart(spots, payoffs){
     return;
   }
 
-  const pointColors = payoffs.map(v => v >= 0 ? posColor : negColor);
-  const data = {
-    labels: spots,
-    datasets:[{
-      label:'P&L no Vencimento',
-      data: payoffs,
-      borderWidth: 2,
+  extra = extra || {};
+  const spotColor = isDark ? '#ffcf3d' : '#e0a800';   // amarelo = preço atual (como no app de referência)
+  const beColor   = isDark ? '#00d4ff' : '#0066b4';   // ciano = break-even
+  const todayColor= isDark ? '#a06bff' : '#7c3aed';   // roxo = curva "Hoje"
+
+  // ── Janela de EXIBIÇÃO centralizada (puramente visual; não altera spots/payoffs) ──
+  // Centro = preço atual (ou ponto médio dos preços relevantes). Raio = maior distância
+  // do centro até os pontos de interesse (spot, break-evens, extremos da grade), com folga.
+  // Deixa as pernas de um straddle/strangle simétricas em vez de cortar uma antes da outra.
+  const xData = spots;
+  const dataMin = xData[0], dataMax = xData[xData.length-1];
+  // Centro: prioriza o spot (referência do operador); cai p/ ponto médio da grade se sem spot.
+  const centro = (extra.spot != null && extra.spot > 0) ? extra.spot : (dataMin + dataMax)/2;
+  // Pontos que devem caber na janela: spot, break-evens e os strikes da estrutura.
+  const pontosInteresse = [centro];
+  if(extra.spot != null) pontosInteresse.push(extra.spot);
+  (extra.bes || []).forEach(b => pontosInteresse.push(b));
+  (extra.strikes || []).forEach(k => pontosInteresse.push(k));
+  // raio = maior distância do centro a um ponto de interesse, +30% de folga p/ ver os platôs
+  let raio = 0;
+  for(const p of pontosInteresse) raio = Math.max(raio, Math.abs(p - centro));
+  raio = raio * 1.30;
+  raio = Math.max(raio, centro * 0.15); // raio mínimo p/ não espremer posições rentes ao spot
+  let xMin = centro - raio, xMax = centro + raio;
+  if(xMin < 0) xMin = 0;
+  xMin = Math.max(xMin, dataMin);
+  xMax = Math.min(xMax, dataMax);
+
+  // Eixo Y ajustado aos pontos VISÍVEIS (dentro de [xMin,xMax]); senão o Y escala pela put
+  // que vai a R$16k fora da janela e achata o gráfico. Considera vencimento e "Hoje".
+  let yLo = Infinity, yHi = -Infinity;
+  for(let i=0;i<spots.length;i++){
+    if(spots[i] < xMin || spots[i] > xMax) continue;
+    const yv = payoffs[i];
+    if(yv < yLo) yLo = yv;
+    if(yv > yHi) yHi = yv;
+    if(extra.today && extra.today[i] != null){
+      const yt = extra.today[i];
+      if(yt < yLo) yLo = yt;
+      if(yt > yHi) yHi = yt;
+    }
+  }
+  if(!isFinite(yLo) || !isFinite(yHi)){ yLo = Math.min(...payoffs); yHi = Math.max(...payoffs); }
+  const yPad = Math.max((yHi - yLo) * 0.12, 1);
+  const yMin = yLo - yPad, yMax = yHi + yPad;
+
+  // Datasets. Eixo X numérico (linear) para posicionar linhas-guia por preço real.
+  const venctoData = spots.map((s,i)=>({x:s, y:payoffs[i]}));
+  const datasets = [{
+    label:'No Vencimento',
+    data: venctoData,
+    borderWidth: 2.5,
+    pointRadius: 0,
+    tension: 0,
+    fill: true,
+    order: 2,
+    segment:{
+      borderColor: c => (c.p0.parsed.y >= 0 && c.p1.parsed.y >= 0) ? posColor
+                       : (c.p0.parsed.y < 0 && c.p1.parsed.y < 0) ? negColor
+                       : (isDark ? '#8a9ab0' : '#888'),
+    },
+    backgroundColor: c => {
+      const ch = c.chart; const {ctx, chartArea, scales} = ch;
+      if(!chartArea) return 'rgba(0,0,0,0)';
+      const yZero = scales.y.getPixelForValue(0);
+      const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+      const t = Math.min(1, Math.max(0, (yZero - chartArea.top)/(chartArea.bottom - chartArea.top)));
+      g.addColorStop(0, 'rgba(0,255,157,0.18)');
+      g.addColorStop(Math.max(0, t-0.001), 'rgba(0,255,157,0.05)');
+      g.addColorStop(Math.min(1, t+0.001), 'rgba(255,61,90,0.05)');
+      g.addColorStop(1, 'rgba(255,61,90,0.18)');
+      return g;
+    },
+    borderColor: posColor,
+  }];
+
+  // Curva "Hoje" (teórica), se houver dados
+  if(extra.today){
+    datasets.push({
+      label:'Hoje',
+      data: spots.map((s,i)=>({x:s, y:extra.today[i]})),
+      borderWidth: 1.75,
+      borderColor: todayColor,
+      borderDash: [5,3],
       pointRadius: 0,
-      tension: 0.3,
-      fill: true,
-      segment:{
-        borderColor: ctx => ctx.p0.parsed.y >= 0 && ctx.p1.parsed.y >= 0 ? posColor : ctx.p0.parsed.y < 0 && ctx.p1.parsed.y < 0 ? negColor : '#aaa',
-        backgroundColor: ctx => {
-          const gradient = ctx.chart.ctx.createLinearGradient(0, 0, 0, 250);
-          gradient.addColorStop(0, 'rgba(0,255,157,0.15)');
-          gradient.addColorStop(1, 'rgba(255,61,90,0.15)');
-          return gradient;
-        }
-      },
-      borderColor: '#00d4ff',
-    }]
+      tension: 0,        // sem Bézier: o BS já é suave com 240 pts; tension distorcia pontas
+      cubicInterpolationMode: 'default',
+      fill: false,
+      order: 1,
+    });
+  }
+
+  // Plugin: linhas verticais de preço atual e break-even(s)
+  const guideLines = {
+    id:'guideLines',
+    afterDatasetsDraw(chart){
+      const {ctx, chartArea, scales} = chart;
+      if(!chartArea) return;
+      const drawV = (price, color, label, dash) => {
+        if(price == null || isNaN(price)) return;
+        if(price < scales.x.min || price > scales.x.max) return;
+        const x = scales.x.getPixelForValue(price);
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash(dash||[]);
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.lineWidth = 1.25;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // etiqueta
+        ctx.font = "700 9px 'Space Mono', monospace";
+        const txt = `${label} ${fmt(price)}`;
+        const tw = ctx.measureText(txt).width;
+        let lx = x + 5;
+        if(lx + tw + 8 > chartArea.right) lx = x - tw - 13;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.92;
+        ctx.fillRect(lx-3, chartArea.top+3, tw+8, 14);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = isDark ? '#0a0e14' : '#fff';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(txt, lx+1, chartArea.top+10);
+        ctx.restore();
+      };
+      (extra.bes||[]).forEach(b => drawV(b, beColor, 'BE', [4,3]));
+      drawV(extra.spot, spotColor, 'Spot', []);
+    }
   };
 
   if(payoffChart){ payoffChart.destroy(); payoffChart = null; }
   const ctx = document.getElementById('payoffChart').getContext('2d');
   payoffChart = new Chart(ctx, {
     type: 'line',
-    data,
+    data:{ datasets },
+    plugins:[guideLines],
     options:{
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode:'index', intersect:false },
+      parsing: false,
+      interaction: { mode:'index', intersect:false, axis:'x' },
       plugins:{
-        legend:{ display:false },
+        legend:{
+          display:true,
+          position:'top',
+          align:'end',
+          labels:{
+            color:textColor,
+            boxWidth:14, boxHeight:2, padding:12,
+            font:{family:"'Space Mono',monospace", size:9.5},
+            usePointStyle:false,
+            generateLabels(chart){
+              const out = [];
+              out.push({text:'No Vencimento', strokeStyle:posColor, fillStyle:posColor, lineWidth:2, datasetIndex:0});
+              if(extra.today) out.push({text:'Hoje', strokeStyle:todayColor, fillStyle:todayColor, lineWidth:2, lineDash:[5,3], datasetIndex:1});
+              if(extra.spot!=null) out.push({text:'Preço Atual', strokeStyle:spotColor, fillStyle:spotColor, lineWidth:2, datasetIndex:undefined});
+              if((extra.bes||[]).length) out.push({text:'Break-Even', strokeStyle:beColor, fillStyle:beColor, lineWidth:2, lineDash:[4,3], datasetIndex:undefined});
+              return out;
+            }
+          },
+          onClick:(e,item,legend)=>{
+            const i = item.datasetIndex;
+            if(i===undefined) return; // ignora itens só de referência
+            const meta = legend.chart.getDatasetMeta(i);
+            meta.hidden = meta.hidden===null ? !legend.chart.data.datasets[i].hidden : null;
+            legend.chart.update();
+          }
+        },
         tooltip:{
           backgroundColor: isDark ? '#131a24' : '#fff',
           borderColor: isDark ? 'rgba(0,212,255,0.3)' : 'rgba(0,100,180,0.2)',
           borderWidth:1,
+          padding:10,
           titleColor: textColor,
           bodyColor: isDark ? '#dde4f0' : '#0d1a2d',
           titleFont:{ family:"'Space Mono',monospace", size:11 },
@@ -1388,13 +1563,18 @@ function updateChart(spots, payoffs){
             title: items => `Preço: R$ ${fmt(items[0].parsed.x)}`,
             label: item => {
               const v = item.parsed.y;
-              return ` P&L: ${v>=0?'+':''}R$ ${fmt(v)}`;
-            }
+              const nome = item.dataset.label;
+              return ` ${nome}: ${v>=0?'+':''}R$ ${fmt(v)}`;
+            },
+            labelTextColor: item => item.parsed.y >= 0 ? posColor : negColor
           }
         }
       },
       scales:{
         x:{
+          type:'linear',
+          min: xMin,
+          max: xMax,
           ticks:{
             color:textColor,
             font:{family:"'Space Mono',monospace", size:9},
@@ -1405,12 +1585,14 @@ function updateChart(spots, payoffs){
           border:{ color:gridColor }
         },
         y:{
+          min: yMin,
+          max: yMax,
           ticks:{
             color:textColor,
             font:{family:"'Space Mono',monospace", size:9},
             callback: v => (v>=0?'+':'')+'R$'+fmt(v)
           },
-          grid:{ color: ctx => ctx.tick.value === 0 ? zeroColor : gridColor },
+          grid:{ color: c => c.tick.value === 0 ? zeroColor : gridColor },
           border:{ color:gridColor }
         }
       }
@@ -1893,40 +2075,38 @@ function gerarRelatorio(){
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
 
   // ── Dados da Operação (reutiliza lógica do updateSummary) ──
-  const range = S > 0 ? S : 50;
+  const _Sref = S || (positions[0] && positions[0].preco) || 50;
+  const _refs = [_Sref];
+  for(const p of positions){
+    if(p.strike > 0) _refs.push(p.strike);
+    if(p.tipo === 'ativo' && p.preco > 0) _refs.push(p.preco);
+  }
+  let _lo = Math.min(_Sref*0.5, ..._refs) * 0.85;
+  let _hi = Math.max(_Sref*1.5, ..._refs) * 1.15;
+  if(_lo < 0) _lo = 0;
+  if(!(_hi > _lo)){ _lo = 0; _hi = _Sref*2; }
   const spots = [];
-  for(let i = -0.5; i <= 0.5; i += 0.005) spots.push(+(range*(1+i)).toFixed(4));
+  for(let i = 0; i <= 240; i++) spots.push(+(_lo + (_hi-_lo)*i/240).toFixed(4));
+  for(const p of positions){ if(p.strike > 0) spots.push(p.strike); }
+  const _temPutAtivo = positions.some(p => p.tipo === 'put' || p.tipo === 'ativo');
+  if(_lo === 0 || _temPutAtivo) spots.push(0);
+  spots.sort((a,b)=>a-b);
   const payoffs = spots.map(s=>calcPayoff(s));
   const maxPnl = Math.max(...payoffs);
   const minPnl = Math.min(...payoffs);
 
-  // Detecta ganho/perda ilimitada pela estrutura real da posição
-  const callsCompra = positions.filter(p=>p.tipo==='call'&&p.op==='compra');
-  const callsVenda  = positions.filter(p=>p.tipo==='call'&&p.op==='venda');
-  const putsCompra  = positions.filter(p=>p.tipo==='put' &&p.op==='compra');
-  const putsVenda   = positions.filter(p=>p.tipo==='put' &&p.op==='venda');
-  const ativoCompra = positions.some(p=>p.tipo==='ativo'&&p.op==='compra');
-  const ativoVenda  = positions.some(p=>p.tipo==='ativo'&&p.op==='venda');
-
-  // GANHO ILIMITADO: call comprada sem call vendida que a limite acima
-  //                  OU put vendida sem put comprada que a limite abaixo
-  //                  OU compra de ativo
-  const callCompraDescoberta = callsCompra.length > 0 && callsVenda.length === 0;
-  const callCompraComVendaAcima = callsCompra.length > 0 && callsVenda.length > 0 &&
-    Math.min(...callsVenda.map(x=>x.strike)) > Math.min(...callsCompra.map(x=>x.strike));
-  // put vendida descoberta = ganho limitado ao prêmio (put não tem ganho ilimitado na alta)
-  const isUnlimitedGain = callCompraDescoberta || callCompraComVendaAcima || ativoCompra;
-
-  // PERDA ILIMITADA: call vendida sem call comprada que a cubra
-  //                  OU put vendida descoberta (preço cai a zero = perda = strike × qtd)
-  //                  OU venda de ativo
-  // NOTA: compra de put NÃO tem perda ilimitada (perda = prêmio pago)
-  //       compra de call NÃO tem perda ilimitada (perda = prêmio pago)
-  const callVendaDescoberta = callsVenda.length > 0 && callsCompra.length === 0;
-  const callVendaSemCobertura = callsVenda.length > 0 && callsCompra.length > 0 &&
-    Math.min(...callsCompra.map(x=>x.strike)) > Math.min(...callsVenda.map(x=>x.strike));
-  const putVendaDescoberta = putsVenda.length > 0 && putsCompra.length === 0 && !ativoCompra;
-  const isUnlimitedLoss = callVendaDescoberta || callVendaSemCobertura || putVendaDescoberta || ativoVenda;
+  // GANHO/PERDA ILIMITADA pela inclinação assintótica. Só a ALTA é ilimitada de fato;
+  // a baixa tem piso de preço em zero (perda/ganho grandes mas finitos).
+  let slopeUp = 0, slopeDown = 0;
+  for(const p of positions){
+    const sign = p.op === 'compra' ? 1 : -1;
+    if(p.tipo === 'ativo'){ slopeUp += sign*p.qtd; slopeDown += sign*p.qtd; }
+    else if(p.tipo === 'call'){ slopeUp += sign*p.qtd; }
+    else if(p.tipo === 'put'){ slopeDown += -sign*p.qtd; }
+  }
+  const _EPS = 1e-9;
+  const isUnlimitedGain = slopeUp > _EPS;
+  const isUnlimitedLoss = slopeUp < -_EPS;
   let cost = 0;
   for(const p of positions) cost += (p.op==='compra'?-1:1)*p.preco*p.qtd;
   let bes = [];
@@ -1936,7 +2116,12 @@ function gerarRelatorio(){
       bes.push(sv);
     }
   }
-  const notional = positions.reduce((s,p)=>s+p.preco*p.qtd,0);
+  const notional = isUnlimitedLoss
+    ? positions.filter(p=>p.op==='venda').reduce((s,p)=>{
+        const base = (p.tipo==='call'||p.tipo==='put') ? (p.strike||p.preco) : p.preco;
+        return s + base * p.qtd;
+      }, 0)
+    : Math.abs(Math.min(0, minPnl));
   const hasLongHedgeR = positions.some(p => p.op === 'compra' && (p.tipo === 'call' || p.tipo === 'put' || p.tipo === 'ativo'));
   const margem = hasLongHedgeR && minPnl > -999999
     ? Math.abs(minPnl)
