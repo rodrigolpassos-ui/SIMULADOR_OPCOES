@@ -348,7 +348,7 @@ tr:hover td{background:var(--surface2);}
       </div>
       <div>
         <label>Quantidade</label>
-        <input type="number" id="fQtd" value="100" min="1">
+        <input type="text" inputmode="numeric" id="fQtd" value="100" min="1">
       </div>
       <div>
         <label>Preço / Prêmio (R$)</label>
@@ -800,11 +800,18 @@ document.addEventListener('DOMContentLoaded', function(){
   document.getElementById('fStrike').addEventListener('input', function(){});
 });
 
+// Lê quantidade tolerando separador de milhar pt-BR ("11.000", "11 000" -> 11000)
+function parseQtd(id){
+  const raw = (document.getElementById(id).value || '').replace(/[.\s]/g,'');
+  const n = parseInt(raw, 10);
+  return (isNaN(n) || n <= 0) ? 100 : n;
+}
+
 function addPosition(overrideData){
   const data = overrideData || {
     op: document.getElementById('fOp').value,
     tipo: document.getElementById('fTipo').value,
-    qtd: parseInt(document.getElementById('fQtd').value)||100,
+    qtd: parseQtd('fQtd'),
     preco: parseFloat(document.getElementById('fPreco').value)||0,
     strike: parseFloat(document.getElementById('fStrike').value)||0,
     dias: parseInt(document.getElementById('fDias').value)||30,
@@ -895,7 +902,7 @@ function saveEdit(){
     id: editingId,
     op: document.getElementById('fOp').value,
     tipo: document.getElementById('fTipo').value,
-    qtd: parseInt(document.getElementById('fQtd').value)||100,
+    qtd: parseQtd('fQtd'),
     preco: parseFloat(document.getElementById('fPreco').value)||0,
     strike: parseFloat(document.getElementById('fStrike').value)||0,
     dias: parseInt(document.getElementById('fDias').value)||30,
