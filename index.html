@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -302,6 +303,45 @@ tr:hover td{background:var(--surface2);}
     <div id="marketCard">
       <div class="empty">Digite um ticker e clique em Buscar</div>
     </div>
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap;">
+      <button class="btn btn-ghost" id="rtdToggleBtn" onclick="toggleRTD()" style="font-size:0.62rem;padding:0.4rem 0.75rem;white-space:nowrap;">▶ Ligar RTD (Profit)</button>
+      <span id="rtdStatusLabel" style="font-size:0.62rem;color:var(--muted);">RTD desconectado</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
+      <button class="btn btn-ghost" type="button" onclick="document.getElementById('cotahistFileInput').click()" style="font-size:0.62rem;padding:0.4rem 0.75rem;white-space:nowrap;">📁 Carregar COTAHIST (.zip)</button>
+      <input type="file" id="cotahistFileInput" accept=".zip" style="display:none;" onchange="if(this.files[0]) loadCotahistFile(this.files[0])">
+      <span id="cotahistFileStatus" style="font-size:0.62rem;color:var(--muted);"></span>
+    </div>
+    <div style="margin-top:0.5rem;">
+      <button class="btn btn-ghost" type="button" id="chainToggleBtn" onclick="toggleOptionChainPanel()" style="font-size:0.62rem;padding:0.4rem 0.75rem;white-space:nowrap;">📋 Ver opções carregadas</button>
+    </div>
+    <div id="optionChainPanel" style="display:none;margin-top:0.75rem;border-top:1px solid var(--border2);padding-top:0.75rem;">
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.6rem;">
+        <label style="font-size:0.6rem;color:var(--muted);white-space:nowrap;">Vencimento</label>
+        <select id="chainVencFilter" onchange="renderOptionChain()"><option value="">Todos</option></select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+        <div>
+          <div style="font-size:0.62rem;color:var(--accent2);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem;">Calls</div>
+          <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border2);border-radius:6px;">
+            <table style="width:100%;font-size:0.65rem;border-collapse:collapse;">
+              <thead><tr style="color:var(--muted);text-align:right;"><th style="text-align:left;padding:0.3rem;">Ticker</th><th style="padding:0.3rem;">Strike</th><th style="padding:0.3rem;">Venc.</th><th style="padding:0.3rem;">Prêmio</th></tr></thead>
+              <tbody id="chainCallsBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem;color:var(--red);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem;">Puts</div>
+          <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border2);border-radius:6px;">
+            <table style="width:100%;font-size:0.65rem;border-collapse:collapse;">
+              <thead><tr style="color:var(--muted);text-align:right;"><th style="text-align:left;padding:0.3rem;">Ticker</th><th style="padding:0.3rem;">Strike</th><th style="padding:0.3rem;">Venc.</th><th style="padding:0.3rem;">Prêmio</th></tr></thead>
+              <tbody id="chainPutsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="chainEmptyMsg" style="font-size:0.62rem;color:var(--muted);margin-top:0.5rem;"></div>
+    </div>
     <!-- HG Brasil key config -->
     <div id="hgKeyPanel" style="margin-top:0.75rem;">
       <details style="font-family:var(--mono);font-size:0.62rem;">
@@ -372,7 +412,12 @@ tr:hover td{background:var(--surface2);}
       </div>
       <div id="tickerOptField" style="display:none;">
         <label>Ticker da Opção</label>
-        <input type="text" id="fTickerOpt" placeholder="Ex: PETRF420W1" style="text-transform:uppercase;">
+        <div style="display:flex;gap:0.4rem;">
+          <input type="text" id="fTickerOpt" placeholder="Ex: PETRF420W1" style="text-transform:uppercase;flex:1;">
+          <button type="button" class="btn btn-ghost" onclick="fetchOptionRTD()" title="Busca o prêmio ao vivo na grade RTD (Profit)" style="white-space:nowrap;font-size:0.62rem;padding:0.5rem 0.6rem;">↻ RTD</button>
+          <button type="button" class="btn btn-ghost" onclick="fetchOptionCotahist()" title="Preenche strike, vencimento e prêmio a partir do arquivo COTAHIST carregado no painel Ativo" style="white-space:nowrap;font-size:0.62rem;padding:0.5rem 0.6rem;">📄 B3 (arquivo)</button>
+        </div>
+        <div id="optRtdStatus" style="font-size:0.58rem;color:var(--muted);margin-top:0.3rem;line-height:1.4;"></div>
       </div>
     </div>
     <button id="addBtn" class="btn btn-success" style="width:100%;" onclick="addPosition()">+ Adicionar Posição</button>
@@ -798,6 +843,26 @@ function onVencDateChange(){
 // Inicializa listeners
 document.addEventListener('DOMContentLoaded', function(){
   document.getElementById('fStrike').addEventListener('input', function(){});
+
+  const tOptEl = document.getElementById('fTickerOpt');
+  if(tOptEl){
+    let optRtdDebounce;
+    tOptEl.addEventListener('input', ()=>{
+      clearTimeout(optRtdDebounce);
+      optRtdDebounce = setTimeout(fetchOptionRTD, 700);
+    });
+    tOptEl.addEventListener('keydown', e=>{
+      if(e.key === 'Enter'){ clearTimeout(optRtdDebounce); fetchOptionRTD(); }
+    });
+  }
+
+  const tickerInputEl = document.getElementById('tickerInput');
+  if(tickerInputEl){
+    tickerInputEl.addEventListener('input', ()=>{
+      const panel = document.getElementById('optionChainPanel');
+      if(panel && panel.style.display !== 'none') renderOptionChain();
+    });
+  }
 });
 
 // Lê quantidade tolerando separador de milhar pt-BR ("11.000", "11 000" -> 11000)
@@ -1999,6 +2064,345 @@ function showHGStatus(msg, color){
 
 // Busca Selic ao carregar
 fetchSelic();
+
+// ══════════════════════════════════════════
+//  RTD (Profit) — ws://127.0.0.1:8766, via stockview_rtd_server.py
+//  Preenche o Prêmio (R$) da opção automaticamente a partir da grade
+//  ao vivo, em vez de digitar na mão. Strike e vencimento continuam
+//  manuais (não dá pra inferir com segurança a partir do código do
+//  ticker da opção), mas assim que os três estiverem preenchidos a
+//  Vol. Implícita é recalculada sozinha a partir do prêmio real.
+// ══════════════════════════════════════════
+const RTD_WS_URL = 'ws://127.0.0.1:8766';
+let rtdSocket = null;
+let rtdWanted = false;
+let rtdReconnectTimer = null;
+let rtdGridMap = {}; // ticker -> { ultimo }
+
+function rtdNormalizeHeader(s){
+  return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+}
+function rtdFindCol(headers, keyword){
+  const kw = rtdNormalizeHeader(keyword);
+  return headers.findIndex(h => rtdNormalizeHeader(h).includes(kw));
+}
+function rtdParseNum(s){
+  if(s==null) return null;
+  const t = String(s).trim();
+  if(t===''||t==='-') return null;
+  const val = parseFloat(t.replace(',', '.'));
+  return isNaN(val) ? null : val;
+}
+
+// TSV com cabeçalho de verdade (Asset, Último, ...) lido por PALAVRA-CHAVE,
+// igual ao parseProfit() do StockView — não importa a ordem das colunas.
+function rtdParseGrid(tsv){
+  const lines = tsv.split('\n').filter(l => l.trim().length);
+  if(lines.length < 2) return {};
+  const headers = lines[0].split('\t');
+  const idxAsset = rtdFindCol(headers, 'asset');
+  const idxUltimo = rtdFindCol(headers, 'ultimo');
+  if(idxAsset === -1) return {};
+  const grid = {};
+  for(let i=1;i<lines.length;i++){
+    const cells = lines[i].split('\t');
+    const ticker = (cells[idxAsset]||'').trim().toUpperCase();
+    if(!ticker) continue;
+    grid[ticker] = { ultimo: idxUltimo>-1 ? rtdParseNum(cells[idxUltimo]) : null };
+  }
+  return grid;
+}
+
+function setRtdLabel(text, color){
+  const el = document.getElementById('rtdStatusLabel');
+  if(el){ el.textContent = text; el.style.color = color || 'var(--muted)'; }
+}
+
+function connectRTD(){
+  if(rtdSocket && (rtdSocket.readyState === WebSocket.OPEN || rtdSocket.readyState === WebSocket.CONNECTING)) return;
+  setRtdLabel('Conectando…', 'var(--yellow)');
+  try{
+    rtdSocket = new WebSocket(RTD_WS_URL);
+  }catch(e){
+    setRtdLabel('Erro ao conectar', 'var(--red)');
+    scheduleRtdReconnect();
+    return;
+  }
+  rtdSocket.onopen = ()=>{
+    setRtdLabel('● RTD conectado', 'var(--accent2)');
+    document.getElementById('rtdToggleBtn').textContent = '■ Desligar RTD';
+  };
+  rtdSocket.onmessage = (ev)=>{
+    try{
+      const msg = JSON.parse(ev.data);
+      if(msg.type === 'grid' && msg.tsv){
+        rtdGridMap = rtdParseGrid(msg.tsv);
+        setRtdLabel('● RTD conectado · ' + new Date().toLocaleTimeString('pt-BR'), 'var(--accent2)');
+      }
+    }catch(e){ /* ignora mensagem malformada */ }
+  };
+  rtdSocket.onclose = ()=>{
+    setRtdLabel('RTD desconectado', 'var(--muted)');
+    document.getElementById('rtdToggleBtn').textContent = '▶ Ligar RTD (Profit)';
+    if(rtdWanted) scheduleRtdReconnect();
+  };
+  rtdSocket.onerror = ()=>{ try{ rtdSocket.close(); }catch(e){} };
+}
+
+function scheduleRtdReconnect(){
+  if(!rtdWanted) return;
+  clearTimeout(rtdReconnectTimer);
+  rtdReconnectTimer = setTimeout(connectRTD, 3000);
+}
+
+function toggleRTD(){
+  rtdWanted = !rtdWanted;
+  if(rtdWanted){
+    connectRTD();
+  } else {
+    clearTimeout(rtdReconnectTimer);
+    if(rtdSocket){ try{ rtdSocket.close(); }catch(e){} rtdSocket = null; }
+    setRtdLabel('RTD desconectado', 'var(--muted)');
+    document.getElementById('rtdToggleBtn').textContent = '▶ Ligar RTD (Profit)';
+  }
+}
+
+// Busca o ticker da opção na grade RTD ao vivo e preenche o Prêmio (R$).
+// Se strike e vencimento já estiverem preenchidos, recalcula a VI na hora.
+function fetchOptionRTD(){
+  const ticker = document.getElementById('fTickerOpt').value.trim().toUpperCase();
+  const statusEl = document.getElementById('optRtdStatus');
+  if(!statusEl) return;
+  if(!ticker){ statusEl.textContent = ''; return; }
+
+  if(!rtdSocket || rtdSocket.readyState !== WebSocket.OPEN){
+    statusEl.textContent = 'RTD desligado — clique em "Ligar RTD" acima, ou digite o prêmio manualmente.';
+    statusEl.style.color = 'var(--yellow)';
+    return;
+  }
+  const g = rtdGridMap[ticker];
+  if(!g || !(g.ultimo > 0)){
+    statusEl.textContent = `"${ticker}" não está na grade RTD agora — cole essa opção na planilha do Profit pra aparecer aqui.`;
+    statusEl.style.color = 'var(--yellow)';
+    return;
+  }
+  document.getElementById('fPreco').value = g.ultimo.toFixed(2);
+  statusEl.textContent = `Prêmio de ${ticker} preenchido da grade RTD: R$ ${g.ultimo.toFixed(2)}`;
+  statusEl.style.color = 'var(--accent2)';
+
+  const K = parseFloat(document.getElementById('fStrike').value) || 0;
+  const dias = parseInt(document.getElementById('fDias').value) || 0;
+  if(K > 0 && dias > 0 && currentPrice > 0){
+    calcIV();
+  }
+}
+
+// ══════════════════════════════════════════
+//  COTAHIST (B3) — arquivo público diário de cotações históricas.
+//  A B3 bloqueia download automatizado com captcha, então isso NÃO
+//  tenta baixar nada pela rede: você baixa o .zip manualmente no site
+//  da B3 e carrega aqui — daí em diante é tudo local, no navegador
+//  (JSZip descompacta, o parser lê o layout de largura fixa). Puxa
+//  STRIKE, VENCIMENTO e PRÊMIO reais de fechamento daquele pregão.
+// ══════════════════════════════════════════
+let cotahistCache = null; // { dateStr, index, count }
+
+function setCotahistStatus(msg, color){
+  const el = document.getElementById('optRtdStatus');
+  if(el){ el.textContent = msg; el.style.color = color || 'var(--muted)'; }
+}
+function setCotahistFileStatus(msg, color){
+  const el = document.getElementById('cotahistFileStatus');
+  if(el){ el.textContent = msg; el.style.color = color || 'var(--muted)'; }
+}
+
+// Layout fixo COTAHIST (posições oficiais da B3, 1-indexadas na doc —
+// convertidas aqui pra índice 0 do JS). TIPREG='01' identifica linha de dado.
+function parseCotahistText(text){
+  const out = [];
+  const lines = text.split('\n');
+  for(const line of lines){
+    if(line.length < 245) continue;
+    if(line.slice(0,2) !== '01') continue;
+    const codneg = line.slice(12,24).trim();
+    if(!codneg) continue;
+    const datapregao = line.slice(2,10);   // AAAAMMDD
+    const preult = parseInt(line.slice(108,121),10)/100;
+    const preexe = parseInt(line.slice(188,201),10)/100;
+    const datven = line.slice(202,210);    // AAAAMMDD
+    out.push({codneg, preult, preexe, datven, datapregao});
+  }
+  return out;
+}
+
+// Carrega o .zip que você baixou manualmente do site da B3 (input file,
+// sem rede nenhuma envolvida — só leitura local do arquivo).
+async function loadCotahistFile(file){
+  setCotahistFileStatus(`Lendo ${file.name}…`, 'var(--yellow)');
+  try{
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    const txtName = Object.keys(zip.files).find(n => /\.txt$/i.test(n));
+    if(!txtName){
+      setCotahistFileStatus('O .zip não parece ter um .txt do COTAHIST dentro.', 'var(--red)');
+      return;
+    }
+    const text = await zip.files[txtName].async('string');
+    const records = parseCotahistText(text);
+    if(!records.length){
+      setCotahistFileStatus('Não achei linhas de dado (layout diferente do esperado?).', 'var(--red)');
+      return;
+    }
+    const index = {};
+    records.forEach(r => { index[r.codneg] = r; });
+    const dp = records[0].datapregao;
+    const dateStr = (dp && dp.length===8) ? `${dp.slice(6,8)}/${dp.slice(4,6)}/${dp.slice(0,4)}` : file.name;
+    cotahistCache = { dateStr, index, count: records.length };
+    setCotahistFileStatus(`✓ Carregado: ${records.length} séries do pregão de ${dateStr}. Clique em "Ver opções carregadas" pra escolher por strike.`, 'var(--accent2)');
+    const panel = document.getElementById('optionChainPanel');
+    if(panel && panel.style.display !== 'none') renderOptionChain();
+  }catch(e){
+    setCotahistFileStatus('Erro ao ler o arquivo: ' + e.message, 'var(--red)');
+  }
+}
+
+function fetchOptionCotahist(){
+  const ticker = document.getElementById('fTickerOpt').value.trim().toUpperCase();
+  if(!ticker){ setCotahistStatus(''); return; }
+
+  if(!cotahistCache){
+    setCotahistStatus('Carregue o arquivo COTAHIST (.zip) no painel Ativo primeiro (botão "📁 Carregar COTAHIST").', 'var(--yellow)');
+    return;
+  }
+  const rec = cotahistCache.index[ticker];
+  if(!rec){
+    setCotahistStatus(`"${ticker}" não apareceu no pregão de ${cotahistCache.dateStr} — confira o código, ou a opção pode não ter sido negociada nesse dia.`, 'var(--yellow)');
+    return;
+  }
+  document.getElementById('fStrike').value = rec.preexe.toFixed(2);
+  const yyyy = rec.datven.slice(0,4), mm = rec.datven.slice(4,6), dd = rec.datven.slice(6,8);
+  if(yyyy && mm && dd){
+    document.getElementById('fVencDate').value = `${dd}/${mm}/${yyyy}`;
+    onVencDateChange();
+  }
+  document.getElementById('fPreco').value = rec.preult.toFixed(2);
+  setCotahistStatus(`${ticker}: strike, vencimento e prêmio preenchidos do pregão de ${cotahistCache.dateStr} (B3 COTAHIST).`, 'var(--accent2)');
+
+  if(currentPrice > 0){
+    calcIV();
+  }
+}
+
+// ══════════════════════════════════════════
+//  GRADE DE OPÇÕES — lista as séries (calls/puts, strike, vencimento,
+//  prêmio) do ativo atual a partir do COTAHIST carregado, pra você
+//  escolher por strike em vez de digitar o código da opção de cor.
+//
+//  Classificação call/put pelo 5º caractere do ticker da opção — convenção
+//  padrão B3: letras A-L (Jan-Dez) = CALL, letras M-X (Jan-Dez) = PUT.
+// ══════════════════════════════════════════
+const CALL_MONTH_LETTERS = 'ABCDEFGHIJKL';
+const PUT_MONTH_LETTERS  = 'MNOPQRSTUVWX';
+
+function optionTypeFromCode(codneg){
+  const letter = (codneg[4] || '').toUpperCase();
+  if(CALL_MONTH_LETTERS.includes(letter)) return 'call';
+  if(PUT_MONTH_LETTERS.includes(letter)) return 'put';
+  return null;
+}
+
+function getChainRoot(){
+  const t = (currentTicker || document.getElementById('tickerInput').value || '').trim().toUpperCase();
+  return t.replace(/\d+$/, '').slice(0,4);
+}
+
+function toggleOptionChainPanel(){
+  const panel = document.getElementById('optionChainPanel');
+  const show = panel.style.display === 'none';
+  panel.style.display = show ? '' : 'none';
+  if(show) renderOptionChain();
+}
+
+function renderOptionChain(){
+  const root = getChainRoot();
+  const msgEl = document.getElementById('chainEmptyMsg');
+  const callsBody = document.querySelector('#chainCallsBody');
+  const putsBody = document.querySelector('#chainPutsBody');
+
+  if(!cotahistCache){
+    msgEl.textContent = 'Carregue o arquivo COTAHIST (.zip) acima primeiro.';
+    msgEl.style.color = 'var(--yellow)';
+    callsBody.innerHTML = ''; putsBody.innerHTML = '';
+    return;
+  }
+  if(!root){
+    msgEl.textContent = 'Digite um ticker no campo Ativo (ex: PETR4).';
+    msgEl.style.color = 'var(--yellow)';
+    return;
+  }
+
+  const all = Object.values(cotahistCache.index).filter(r=>{
+    if(!r.codneg.startsWith(root)) return false;
+    if(!(r.preexe > 0)) return false;
+    if(!r.datven || r.datven === '00000000') return false;
+    return optionTypeFromCode(r.codneg) !== null;
+  });
+
+  // popula o filtro de vencimento, preservando a seleção atual quando possível
+  const vencSel = document.getElementById('chainVencFilter');
+  const vencs = [...new Set(all.map(r=>r.datven))].sort();
+  const currentVenc = vencSel.value;
+  vencSel.innerHTML = '<option value="">Todos</option>' +
+    vencs.map(v=>`<option value="${v}">${v.slice(6,8)}/${v.slice(4,6)}/${v.slice(0,4)}</option>`).join('');
+  if(vencs.includes(currentVenc)) vencSel.value = currentVenc;
+
+  const vencFilter = vencSel.value;
+  const filtered = vencFilter ? all.filter(r=>r.datven===vencFilter) : all;
+
+  if(!filtered.length){
+    msgEl.textContent = `Nenhuma série encontrada pra "${root}" no pregão de ${cotahistCache.dateStr}.`;
+    msgEl.style.color = 'var(--yellow)';
+  } else {
+    msgEl.textContent = `${filtered.length} série(s) de ${root} — clique numa linha pra preencher o formulário.`;
+    msgEl.style.color = 'var(--muted)';
+  }
+
+  const sortFn = (a,b) => a.datven === b.datven ? a.preexe - b.preexe : a.datven.localeCompare(b.datven);
+  const calls = filtered.filter(r=>optionTypeFromCode(r.codneg)==='call').sort(sortFn);
+  const puts  = filtered.filter(r=>optionTypeFromCode(r.codneg)==='put').sort(sortFn);
+
+  const rowHtml = r => `<tr onclick="selectChainOption('${r.codneg}')" style="cursor:pointer;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+    <td style="padding:0.25rem 0.3rem;text-align:left;">${r.codneg}</td>
+    <td style="padding:0.25rem 0.3rem;text-align:right;">${r.preexe.toFixed(2)}</td>
+    <td style="padding:0.25rem 0.3rem;text-align:right;">${r.datven.slice(6,8)}/${r.datven.slice(4,6)}</td>
+    <td style="padding:0.25rem 0.3rem;text-align:right;">${r.preult.toFixed(2)}</td>
+  </tr>`;
+
+  callsBody.innerHTML = calls.map(rowHtml).join('') || '<tr><td colspan="4" style="color:var(--muted);padding:0.4rem;text-align:center;">—</td></tr>';
+  putsBody.innerHTML = puts.map(rowHtml).join('') || '<tr><td colspan="4" style="color:var(--muted);padding:0.4rem;text-align:center;">—</td></tr>';
+}
+
+// Clique numa linha da grade: configura Tipo (call/put), abre os campos de
+// opção, e preenche ticker/strike/vencimento/prêmio de uma vez.
+function selectChainOption(codneg){
+  const rec = cotahistCache && cotahistCache.index[codneg];
+  if(!rec) return;
+  const tipo = optionTypeFromCode(codneg);
+  if(tipo){
+    document.getElementById('fTipo').value = tipo;
+    toggleOptionFields();
+  }
+  document.getElementById('fTickerOpt').value = codneg;
+  document.getElementById('fStrike').value = rec.preexe.toFixed(2);
+  const yyyy = rec.datven.slice(0,4), mm = rec.datven.slice(4,6), dd = rec.datven.slice(6,8);
+  document.getElementById('fVencDate').value = `${dd}/${mm}/${yyyy}`;
+  onVencDateChange();
+  document.getElementById('fPreco').value = rec.preult.toFixed(2);
+  setCotahistStatus(`${codneg} selecionado da grade (B3 COTAHIST, ${cotahistCache.dateStr}).`, 'var(--accent2)');
+  if(currentPrice > 0) calcIV();
+  const panelTitle = document.getElementById('formPanelTitle');
+  if(panelTitle) panelTitle.scrollIntoView({behavior:'smooth', block:'center'});
+}
 </script>
 
 <!-- ── TRADINGVIEW MODAL ── -->
