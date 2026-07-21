@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -245,6 +246,19 @@ tr:hover td{background:var(--surface2);}
 .bs-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
 .bs-tab-panel{display:none;}
 .bs-tab-panel.active{display:block;}
+
+/* ── APP-LEVEL VIEW SWITCHER (Simulador / GEX Opções) ── */
+.app-tabs{display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:1.25rem;}
+.app-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:var(--mono);font-size:0.75rem;letter-spacing:0.1em;text-transform:uppercase;padding:0.6rem 1.2rem;cursor:pointer;transition:all 0.15s;margin-bottom:-1px;}
+.app-tab:hover{color:var(--text);}
+.app-tab.active{color:var(--accent2);border-bottom-color:var(--accent2);}
+.app-view{display:none;}
+.app-view.active{display:block;}
+.gex-charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;}
+@media(max-width:900px){.gex-charts-grid{grid-template-columns:1fr;}}
+.gex-tbl-wrap{max-height:420px;overflow-y:auto;}
+tr.gex-atm td{background:var(--surface3);}
+tr.gex-wall td{box-shadow:inset 0 0 0 1px var(--yellow);}
 </style>
 </head>
 <body>
@@ -287,6 +301,12 @@ tr:hover td{background:var(--surface2);}
   </div>
 </header>
 
+<div class="app-tabs">
+  <button class="app-tab active" id="viewTabSimulador" onclick="switchAppView('viewTabSimulador','viewSimulador')">Simulador</button>
+  <button class="app-tab" id="viewTabGex" onclick="switchAppView('viewTabGex','viewGex')">GEX Opções</button>
+</div>
+
+<div id="viewSimulador" class="app-view active">
 <div class="main-grid">
 
 <!-- LEFT COLUMN: Controls -->
@@ -534,6 +554,115 @@ tr:hover td{background:var(--surface2);}
 
 </div>
 </div><!-- end main-grid -->
+</div><!-- end viewSimulador -->
+
+<div id="viewGex" class="app-view">
+
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-title">GEX Opções — Importar Grade <span id="gexTickerBadge" style="color:var(--accent2);"></span></div>
+  <div class="flex-row">
+    <button class="btn btn-ghost" type="button" onclick="document.getElementById('gexFileInput').click()">📁 Escolher arquivo .xlsx/.csv</button>
+    <input type="file" id="gexFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
+    <button class="btn btn-ghost" type="button" onclick="gexTogglePaste()">📋 Colar dados (Ctrl+V)</button>
+    <button class="btn btn-danger" type="button" onclick="gexResetAll()">🗑 Limpar dados</button>
+    <span id="gexFileStatus" style="font-size:0.68rem;color:var(--muted);"></span>
+  </div>
+  <div id="gexPasteWrap" style="display:none;margin-top:0.75rem;">
+    <textarea id="gexPasteArea" placeholder="Cole aqui as células copiadas do Excel/Profit (Ativo, Variação, Volume, C. Abertos, Delta, Vol Impl ... Strike ... Ativo)" style="width:100%;min-height:70px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:0.6rem;color:var(--text);font-family:var(--mono);font-size:0.72rem;resize:vertical;"></textarea>
+    <button class="btn btn-primary" type="button" onclick="gexProcessPaste()" style="margin-top:0.5rem;">Processar colagem</button>
+  </div>
+
+  <div class="form-grid" style="margin-top:1rem;">
+    <div>
+      <label>Ativo</label>
+      <input type="text" id="gexCtlTicker" placeholder="ex: PETR4, VALE3...">
+    </div>
+    <div>
+      <label>Preço Spot</label>
+      <input type="number" step="0.01" id="gexCtlSpot" placeholder="auto">
+    </div>
+    <div>
+      <label>Vencimento</label>
+      <input type="date" id="gexCtlExpiry">
+    </div>
+    <div>
+      <label>Taxa livre de risco (% a.a.)</label>
+      <input type="number" step="0.1" id="gexCtlRate" value="14.5">
+    </div>
+    <div class="form-full">
+      <label>Multiplicador do contrato</label>
+      <input type="number" step="1" id="gexCtlMult" value="100" style="max-width:160px;">
+    </div>
+  </div>
+  <div id="gexCalcStatus" style="font-size:0.68rem;color:var(--muted);margin-top:0.5rem;"></div>
+</div>
+
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-title">Resumo <span id="gexTickerBadge2" style="color:var(--accent2);"></span></div>
+  <div class="result-grid" style="grid-template-columns:repeat(3,1fr);">
+    <div class="result-card"><div class="result-label">Spot</div><div class="result-value neutral" id="gexKSpot">—</div></div>
+    <div class="result-card"><div class="result-label">Dias até vencimento</div><div class="result-value" id="gexKDte">—</div></div>
+    <div class="result-card"><div class="result-label">Call Wall</div><div class="result-value pos" id="gexKCallWall">—</div></div>
+    <div class="result-card"><div class="result-label">Put Wall</div><div class="result-value neg" id="gexKPutWall">—</div></div>
+    <div class="result-card"><div class="result-label">Gamma Flip (Zero Gamma)</div><div class="result-value" id="gexKFlip">—</div><div style="font-size:0.6rem;color:var(--muted);margin-top:0.3rem;" id="gexKFlipExtra"></div></div>
+    <div class="result-card"><div class="result-label">Regime atual</div><div class="result-value" id="gexKRegime">—</div></div>
+    <div class="result-card highlight"><div class="result-label">GEX Total (R$ / 1% no spot)</div><div class="result-value" id="gexKTotalGex">—</div></div>
+    <div class="result-card"><div class="result-label">Max Pain</div><div class="result-value" style="color:var(--yellow);" id="gexKMaxPain">—</div></div>
+    <div class="result-card"><div class="result-label">Delta Exposure do dealer (R$)</div><div class="result-value" id="gexKDex">—</div></div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-title">Open Interest por strike</div>
+  <div class="chart-wrap" style="height:280px;"><canvas id="gexChartOI"></canvas></div>
+</div>
+
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="gex-charts-grid">
+    <div>
+      <div class="panel-title">GEX por strike (visão do dealer)</div>
+      <div class="chart-wrap" style="height:280px;"><canvas id="gexChartGex"></canvas></div>
+    </div>
+    <div>
+      <div class="panel-title">Gamma total vs. spot hipotético</div>
+      <div class="chart-wrap" style="height:280px;"><canvas id="gexChartFlip"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.8rem;">
+    <div class="panel-title" style="margin-bottom:0;">Tabela por strike</div>
+    <button class="btn btn-ghost" type="button" onclick="gexDownloadCsv()">⬇ Baixar CSV</button>
+  </div>
+  <div class="positions-area gex-tbl-wrap">
+    <table>
+      <thead>
+        <tr><th>Strike</th><th>OI Calls</th><th>Δ Call</th><th>γ Call</th><th>IV Call</th><th>OI Puts</th><th>Δ Put</th><th>γ Put</th><th>IV Put</th><th>GEX (R$ mi)</th></tr>
+      </thead>
+      <tbody id="gexTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div style="font-size:0.68rem;color:var(--muted);line-height:1.6;">
+  <b style="color:var(--text);">Metodologia e ressalvas.</b> GEX por strike = (γ_call × OI_call − γ_put × OI_put) × multiplicador × Spot² × 0,01,
+  somando calls e puts com suas respectivas IVs (Vol Impl da grade). Convenção assumida (padrão SqueezeMetrics/SpotGamma):
+  dealer comprado em calls e vendido em puts — no B3 essa convenção é uma aproximação mais fraca do que nos EUA, porque
+  o programa de Formador de Mercado é menos centralizado. <b style="color:var(--text);">Call Wall</b>/<b style="color:var(--text);">Put Wall</b>
+  = strike com maior OI de calls/puts. <b style="color:var(--text);">Gamma Flip</b> recalcula o GEX total para uma faixa de
+  spots hipotéticos entre 65% e 135% do spot atual e interpola onde a soma cruza zero; se houver mais de um cruzamento,
+  o mais próximo do spot vira o card principal e os demais aparecem listados abaixo dele. Gamma vem de Black-Scholes
+  usando a Vol Impl de cada lado (call/put) da própria grade; strikes sem IV registrada contam gamma ≈ 0.
+  <b style="color:var(--text);">Max Pain</b> é o strike (dentre os presentes na grade) que minimiza o valor total pago
+  aos titulares no vencimento — heurística de mercado, não previsão. <b style="color:var(--text);">Delta Exposure (DEX)</b>
+  usa o Delta já reportado na grade (não recalculado), com a mesma convenção do GEX. Spot é auto-detectado a partir do
+  valor intrínseco das opções mais próximas do dinheiro; confira e ajuste se destoar da cotação real. Vencimento e taxa
+  de juros são estimativas editáveis. Screener educacional, não constitui recomendação de investimento.
+</div>
+
+</div><!-- end viewGex -->
+
 </div><!-- end app -->
 
 <script>
@@ -554,6 +683,14 @@ function setTheme(t){
   document.getElementById('btnDark').classList.toggle('active', t==='dark');
   document.getElementById('btnLight').classList.toggle('active', t==='light');
   updateChart();
+  if(window.gexOnThemeChange) window.gexOnThemeChange();
+}
+
+function switchAppView(btnId, viewId){
+  document.querySelectorAll('.app-tab').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.app-view').forEach(v=>v.classList.remove('active'));
+  document.getElementById(btnId).classList.add('active');
+  document.getElementById(viewId).classList.add('active');
 }
 
 function switchTab(btnId, panelId){
@@ -2720,6 +2857,508 @@ ${opts.length?`
   win.document.write(html);
   win.document.close();
 }
+</script>
+
+<script>
+// ══════════════════════════════════════════
+//  GEX OPÇÕES — módulo isolado (IIFE) para não colidir com o simulador
+// ══════════════════════════════════════════
+(function(){
+let GEX_OPTIONS = [];
+let gexCharts = {};
+let gexLastRows = [];
+
+function gexThemeColors(){
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  return light
+    ? { tick:'#7a8ea8', grid:'rgba(0,100,180,0.15)', legend:'#0d1a2d', teal:'#00a060', red:'#d02040', yellow:'#c07800', tealFill:'rgba(0,160,96,0.10)' }
+    : { tick:'#8a9ab0', grid:'rgba(0,212,255,0.15)', legend:'#dde4f0', teal:'#00ff9d', red:'#ff3d5a', yellow:'#ffb800', tealFill:'rgba(0,255,157,0.08)' };
+}
+
+function gexParseNumBR(v){
+  if(v === null || v === undefined) return 0;
+  if(typeof v === 'number') return v;
+  let s = String(v).trim();
+  if(s === '-' || s === '') return 0;
+  let mult = 1;
+  if(s.endsWith('k') || s.endsWith('K')){ mult = 1e3; s = s.slice(0,-1); }
+  else if(s.endsWith('M')){ mult = 1e6; s = s.slice(0,-1); }
+  s = s.replace(/\./g,'').replace(',', '.');
+  let n = parseFloat(s);
+  return isNaN(n) ? 0 : n*mult;
+}
+function gexParseIV(v){
+  if(v === null || v === undefined) return null;
+  if(typeof v === 'number') return v;
+  let s = String(v).trim();
+  if(s === '-' || s === '') return null;
+  let isPct = s.endsWith('%');
+  if(isPct) s = s.slice(0,-1).trim();
+  s = s.replace(',', '.');
+  let n = parseFloat(s);
+  if(isNaN(n)) return null;
+  return isPct ? n/100 : n;
+}
+
+function gexStripHeaderIfPresent(rows){
+  if(!rows.length) return rows;
+  const strikeCell = rows[0][11];
+  const looksNumeric = strikeCell != null && !isNaN(parseFloat(String(strikeCell).replace(',','.')));
+  return looksNumeric ? rows : rows.slice(1);
+}
+
+// Layout fixo da "grade": 0 Ativo(call) 1 Variação 2 Volume 3 C.Abertos 4 Delta 5 VolImpl
+// 6 Intrínseco 7 Extrínseco 8 Negócios 9 Bid 10 Ask 11 Strike 12 Bid 13 Ask 14 Negócios
+// 15 Extrínseco 16 Intrínseco 17 VolImpl 18 Delta 19 C.Abertos 20 Volume 21 Variação 22 Ativo(put)
+function gexParseGradeRows(rows){
+  const out = [];
+  for(const row of rows){
+    if(!row || row.length < 12) continue;
+    const strike = parseFloat(String(row[11]).toString().replace(',','.'));
+    if(isNaN(strike)) continue;
+    out.push({
+      strike: strike,
+      callTicker: row[0] || '',
+      callOI: gexParseNumBR(row[3]),
+      callDelta: gexParseIV(row[4]),
+      callIV: gexParseIV(row[5]),
+      callIntrinsic: gexParseIV(row[6]) || 0,
+      putTicker: row[22] || '',
+      putOI: gexParseNumBR(row[19]),
+      putDelta: gexParseIV(row[18]),
+      putIV: gexParseIV(row[17]),
+      putIntrinsic: gexParseIV(row[16]) || 0,
+    });
+  }
+  out.sort((a,b)=>a.strike-b.strike);
+  return out;
+}
+
+function gexEstimateSpot(opts){
+  const ests = [];
+  for(const o of opts){
+    if(o.callIntrinsic > 0.005) ests.push(o.strike + o.callIntrinsic);
+    if(o.putIntrinsic > 0.005) ests.push(o.strike - o.putIntrinsic);
+  }
+  if(!ests.length) return null;
+  ests.sort((a,b)=>a-b);
+  const mid = Math.floor(ests.length/2);
+  return ests.length % 2 ? ests[mid] : (ests[mid-1]+ests[mid])/2;
+}
+
+function gexDefaultExpiryFriday(){
+  const d = new Date();
+  const day = d.getDay();
+  let add = (5 - day + 7) % 7;
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0,10);
+}
+
+function gexNormPdf(x){ return Math.exp(-0.5*x*x)/Math.sqrt(2*Math.PI); }
+function gexGammaBS(S,K,sigma,r,T){
+  if(!sigma || sigma<=0 || T<=0 || S<=0 || K<=0) return 0;
+  const d1 = (Math.log(S/K) + (r+0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+  return gexNormPdf(d1) / (S*sigma*Math.sqrt(T));
+}
+function gexTotalGexAt(S, r, T, mult){
+  let tot = 0;
+  for(const o of GEX_OPTIONS){
+    const gc = o.callIV ? gexGammaBS(S,o.strike,o.callIV,r,T) : 0;
+    const gp = o.putIV ? gexGammaBS(S,o.strike,o.putIV,r,T) : 0;
+    tot += (gc*o.callOI - gp*o.putOI) * mult * S * S * 0.01;
+  }
+  return tot;
+}
+function gexFindGammaFlip(S0, r, T, mult){
+  const lo = S0*0.65, hi = S0*1.35, N = 260;
+  let prevP = lo, prevG = gexTotalGexAt(lo,r,T,mult);
+  let flips = [];
+  for(let i=1;i<=N;i++){
+    const p = lo + (hi-lo)*i/N;
+    const g = gexTotalGexAt(p,r,T,mult);
+    if((prevG<0) !== (g<0) && prevG !== g){
+      flips.push(prevP + (0-prevG)*(p-prevP)/(g-prevG));
+    }
+    prevP = p; prevG = g;
+  }
+  if(!flips.length) return {nearest:null, all:[]};
+  flips.sort((a,b)=>Math.abs(a-S0)-Math.abs(b-S0));
+  return {nearest:flips[0], all:flips};
+}
+function gexComputeMaxPain(rows){
+  let best = {strike:null, pain:Infinity};
+  for(const candidate of rows){
+    let pain = 0;
+    for(const r of rows){
+      pain += r.callOI * Math.max(candidate.strike - r.strike, 0);
+      pain += r.putOI * Math.max(r.strike - candidate.strike, 0);
+    }
+    if(pain < best.pain) best = {strike:candidate.strike, pain};
+  }
+  return best;
+}
+function gexComputeDealerDEX(rows, S, mult){
+  let dex = 0;
+  for(const r of rows){
+    const dc = r.callDelta != null ? r.callDelta : 0;
+    const dp = r.putDelta != null ? r.putDelta : 0;
+    dex += (dc*r.callOI - dp*r.putOI) * mult * S;
+  }
+  return dex;
+}
+function gexFmtMoney(v){
+  const abs = Math.abs(v);
+  if(abs >= 1e9) return (v/1e9).toFixed(2)+' bi';
+  if(abs >= 1e6) return (v/1e6).toFixed(1)+' mi';
+  if(abs >= 1e3) return (v/1e3).toFixed(0)+' mil';
+  return v.toFixed(0);
+}
+function gexFmtOI(v){
+  if(v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if(v >= 1e3) return (v/1e3).toFixed(1)+'k';
+  return String(Math.round(v));
+}
+
+function gexUpdateTickerBadge(){
+  const t = document.getElementById('gexCtlTicker').value.trim().toUpperCase();
+  const label = t ? '— '+t : '';
+  document.getElementById('gexTickerBadge').textContent = label;
+  document.getElementById('gexTickerBadge2').textContent = label;
+}
+
+function gexRecalc(){
+  gexUpdateTickerBadge();
+  const statusEl = document.getElementById('gexCalcStatus');
+  if(!GEX_OPTIONS.length){ statusEl.textContent=''; return; }
+  const S = parseFloat(document.getElementById('gexCtlSpot').value);
+  const expiryStr = document.getElementById('gexCtlExpiry').value;
+  const rate = parseFloat(document.getElementById('gexCtlRate').value)/100;
+  const mult = parseFloat(document.getElementById('gexCtlMult').value);
+  if(!S || !expiryStr || isNaN(rate) || !mult){ statusEl.textContent='Preencha spot, vencimento, taxa e multiplicador.'; statusEl.style.color='var(--red)'; return; }
+
+  const today = new Date();
+  const expiry = new Date(expiryStr+'T00:00:00');
+  const days = Math.max((expiry - today) / 86400000, 0.01);
+  const T = days/365;
+
+  let totalGex = 0;
+  let callWall = {strike:null, oi:-1};
+  let putWall = {strike:null, oi:-1};
+  const rows = [];
+
+  for(const o of GEX_OPTIONS){
+    const gc = o.callIV ? gexGammaBS(S,o.strike,o.callIV,rate,T) : 0;
+    const gp = o.putIV ? gexGammaBS(S,o.strike,o.putIV,rate,T) : 0;
+    const gex = (gc*o.callOI - gp*o.putOI) * mult * S * S * 0.01;
+    totalGex += gex;
+    if(o.callOI > callWall.oi) callWall = {strike:o.strike, oi:o.callOI};
+    if(o.putOI > putWall.oi) putWall = {strike:o.strike, oi:o.putOI};
+    rows.push({...o, gc, gp, gex});
+  }
+
+  const flip = gexFindGammaFlip(S, rate, T, mult);
+  const maxPain = gexComputeMaxPain(rows);
+  const dex = gexComputeDealerDEX(rows, S, mult);
+
+  document.getElementById('gexKSpot').textContent = 'R$ '+S.toFixed(2);
+  document.getElementById('gexKDte').textContent = Math.round(days)+'d';
+  document.getElementById('gexKCallWall').textContent = callWall.strike!=null ? callWall.strike.toFixed(2) : '—';
+  document.getElementById('gexKPutWall').textContent = putWall.strike!=null ? putWall.strike.toFixed(2) : '—';
+  document.getElementById('gexKFlip').textContent = flip.nearest!=null ? 'R$ '+flip.nearest.toFixed(2) : 'não encontrado (±35%)';
+  const otherFlips = flip.all.filter(f=>f!==flip.nearest).sort((a,b)=>a-b);
+  document.getElementById('gexKFlipExtra').textContent = otherFlips.length ? 'outros cruzamentos: R$ '+otherFlips.map(f=>f.toFixed(2)).join(', R$ ') : '';
+  const regimeEl = document.getElementById('gexKRegime');
+  regimeEl.textContent = totalGex >= 0 ? 'Positivo (amortecedor)' : 'Negativo (amplificador)';
+  regimeEl.className = 'result-value ' + (totalGex>=0?'pos':'neg');
+  const totalGexEl = document.getElementById('gexKTotalGex');
+  totalGexEl.textContent = (totalGex>=0?'+':'−')+'R$ '+gexFmtMoney(Math.abs(totalGex));
+  totalGexEl.className = 'result-value ' + (totalGex>=0?'pos':'neg');
+  document.getElementById('gexKMaxPain').textContent = maxPain.strike!=null ? 'R$ '+maxPain.strike.toFixed(2) : '—';
+  const dexEl = document.getElementById('gexKDex');
+  dexEl.textContent = (dex>=0?'+':'−')+'R$ '+gexFmtMoney(Math.abs(dex));
+  dexEl.className = 'result-value ' + (dex>=0?'pos':'neg');
+
+  gexRenderTable(rows, S, callWall.strike, putWall.strike);
+  gexRenderCharts(rows, S, rate, T, mult, flip.nearest, callWall.strike, putWall.strike);
+  gexLastRows = rows;
+
+  statusEl.textContent = 'Calculado com '+rows.length+' strikes • vencimento em '+Math.round(days)+' dia(s) corrido(s).';
+  statusEl.style.color = 'var(--accent2)';
+}
+
+function gexRenderTable(rows, S, callWallStrike, putWallStrike){
+  const tbody = document.getElementById('gexTableBody');
+  tbody.innerHTML = '';
+  let atmStrike = null, atmDiff = Infinity;
+  for(const r of rows){ const d = Math.abs(r.strike-S); if(d<atmDiff){ atmDiff=d; atmStrike=r.strike; } }
+  for(const r of rows){
+    const tr = document.createElement('tr');
+    if(r.strike === atmStrike) tr.classList.add('gex-atm');
+    if(r.strike === callWallStrike || r.strike === putWallStrike) tr.classList.add('gex-wall');
+    tr.innerHTML = `
+      <td>${r.strike.toFixed(2)}</td>
+      <td>${gexFmtOI(r.callOI)}</td>
+      <td>${r.callDelta!=null ? r.callDelta.toFixed(2) : '—'}</td>
+      <td>${r.gc.toFixed(4)}</td>
+      <td>${r.callIV!=null ? (r.callIV*100).toFixed(1)+'%' : '—'}</td>
+      <td>${gexFmtOI(r.putOI)}</td>
+      <td>${r.putDelta!=null ? r.putDelta.toFixed(2) : '—'}</td>
+      <td>${r.gp.toFixed(4)}</td>
+      <td>${r.putIV!=null ? (r.putIV*100).toFixed(1)+'%' : '—'}</td>
+      <td style="color:${r.gex>=0?'var(--accent2)':'var(--red)'}">${(r.gex/1e6).toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function gexDestroyChart(key){ if(gexCharts[key]){ gexCharts[key].destroy(); gexCharts[key]=null; } }
+
+function gexBaseChartOpts(stacked){
+  const c = gexThemeColors();
+  return {
+    responsive:true, maintainAspectRatio:false,
+    scales:{
+      x:{ ticks:{color:c.tick, maxRotation:70, minRotation:70, autoSkip:true, maxTicksLimit:30, font:{size:9}}, grid:{display:false}, stacked },
+      y:{ ticks:{color:c.tick, font:{size:10}}, grid:{color:c.grid}, stacked }
+    },
+    plugins:{ legend:{labels:{color:c.legend, font:{size:10}}} }
+  };
+}
+
+function gexRenderCharts(rows, S, rate, T, mult, flip, callWallStrike, putWallStrike){
+  const labels = rows.map(r=>r.strike.toFixed(2));
+  const c = gexThemeColors();
+  const callWallIdx = rows.findIndex(r=>r.strike===callWallStrike);
+  const putWallIdx = rows.findIndex(r=>r.strike===putWallStrike);
+
+  const gexWallLabelPlugin = {
+    id:'gexWallLabels',
+    afterDatasetsDraw(chart){
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.font = '8px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = c.yellow;
+      if(callWallIdx > -1){
+        const bar = chart.getDatasetMeta(0).data[callWallIdx];
+        if(bar) ctx.fillText('Call Wall', bar.x, Math.max(bar.y - 4, 10));
+      }
+      if(putWallIdx > -1){
+        const bar = chart.getDatasetMeta(1).data[putWallIdx];
+        if(bar) ctx.fillText('Put Wall', bar.x, Math.min(bar.y + 12, chart.chartArea.bottom - 2));
+      }
+      ctx.restore();
+    }
+  };
+
+  gexDestroyChart('oi');
+  gexCharts.oi = new Chart(document.getElementById('gexChartOI').getContext('2d'), {
+    type:'bar',
+    data:{ labels, datasets:[
+      {label:'OI Calls', data: rows.map(r=>r.callOI), backgroundColor: rows.map((r,i)=> i===callWallIdx ? c.yellow : c.teal), borderRadius:2, barPercentage:0.9},
+      {label:'OI Puts', data: rows.map(r=>-r.putOI), backgroundColor: rows.map((r,i)=> i===putWallIdx ? c.yellow : c.red), borderRadius:2, barPercentage:0.9},
+    ]},
+    options: gexBaseChartOpts(true),
+    plugins: [gexWallLabelPlugin]
+  });
+
+  gexDestroyChart('gex');
+  gexCharts.gex = new Chart(document.getElementById('gexChartGex').getContext('2d'), {
+    type:'bar',
+    data:{ labels, datasets:[{
+      label:'GEX (R$ mi / 1%)', data: rows.map(r=>r.gex/1e6),
+      backgroundColor: rows.map(r=>r.gex>=0?c.teal:c.red), borderRadius:2
+    }]},
+    options: gexBaseChartOpts(false)
+  });
+
+  gexDestroyChart('flip');
+  const lo = S*0.75, hi = S*1.25, N=100;
+  const pricePts = [], gammaPts = [];
+  for(let i=0;i<=N;i++){
+    const p = lo + (hi-lo)*i/N;
+    pricePts.push(p);
+    gammaPts.push(gexTotalGexAt(p, rate, T, mult)/1e6);
+  }
+  const datasets = [{
+    label:'GEX total (R$ mi)', data: pricePts.map((p,i)=>({x:p, y:gammaPts[i]})),
+    borderColor:c.teal, backgroundColor:c.tealFill, fill:true, tension:0.25, pointRadius:0, borderWidth:2
+  }];
+  const yMin = Math.min(...gammaPts), yMax = Math.max(...gammaPts);
+  datasets.push({label:'Spot atual', data:[{x:S,y:yMin},{x:S,y:yMax}], borderColor:c.yellow, borderDash:[5,4], pointRadius:0, borderWidth:1.5});
+  if(flip!=null){
+    datasets.push({label:'Gamma Flip', data:[{x:flip,y:yMin},{x:flip,y:yMax}], borderColor:c.tick, borderDash:[2,3], pointRadius:0, borderWidth:1.5});
+  }
+  gexCharts.flip = new Chart(document.getElementById('gexChartFlip').getContext('2d'), {
+    type:'line',
+    data:{ datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{ type:'linear', title:{display:true, text:'Spot hipotético (R$)', color:c.tick}, ticks:{color:c.tick}, grid:{color:c.grid} },
+        y:{ title:{display:true, text:'GEX total (R$ mi)', color:c.tick}, ticks:{color:c.tick}, grid:{color:c.grid} }
+      },
+      plugins:{ legend:{labels:{color:c.legend, font:{size:10}}} }
+    }
+  });
+}
+
+// Raiz do ticker de opção (letras antes do código do mês) → ticker do ativo-objeto.
+// Cobre os nomes mais líquidos do mercado de opções B3 — não é uma lista completa,
+// então se o ativo não estiver aqui o campo simplesmente fica em branco pra preencher à mão.
+const GEX_ROOT_TICKERS = {
+  PETR:'PETR4', VALE:'VALE3', ITUB:'ITUB4', BBDC:'BBDC4', BBAS:'BBAS3', ABEV:'ABEV3',
+  BOVA:'BOVA11', B3SA:'B3SA3', ITSA:'ITSA4', WEGE:'WEGE3', RENT:'RENT3', SUZB:'SUZB3',
+  JBSS:'JBSS3', GGBR:'GGBR4', CSNA:'CSNA3', USIM:'USIM5', EMBR:'EMBR3', PRIO:'PRIO3',
+  RAIL:'RAIL3', CSAN:'CSAN3', ELET:'ELET3', HAPV:'HAPV3', RADL:'RADL3', LREN:'LREN3',
+  EQTL:'EQTL3', SBSP:'SBSP3', TOTS:'TOTS3', VIVT:'VIVT3', TIMS:'TIMS3', KLBN:'KLBN11',
+  CCRO:'CCRO3', CYRE:'CYRE3', MRVE:'MRVE3', AZUL:'AZUL4', MGLU:'MGLU3', NTCO:'NTCO3',
+  BEEF:'BEEF3', BRFS:'BRFS3', CMIG:'CMIG4', CPLE:'CPLE6', GOAU:'GOAU4', UGPA:'UGPA3',
+  SANB:'SANB11', BPAC:'BPAC11', ENEV:'ENEV3', EGIE:'EGIE3', CIEL:'CIEL3', YDUQ:'YDUQ3',
+  COGN:'COGN3', ALPA:'ALPA4', ASAI:'ASAI3', CRFB:'CRFB3', IRBR:'IRBR3', BRAP:'BRAP4',
+  MULT:'MULT3', ARZZ:'ARZZ3', SLCE:'SLCE3', SMTO:'SMTO3', RAIZ:'RAIZ4', VBBR:'VBBR3',
+  DXCO:'DXCO3', TAEE:'TAEE11'
+};
+function gexGuessTicker(callTicker, putTicker){
+  for(const t of [callTicker, putTicker]){
+    if(!t) continue;
+    const up = String(t).toUpperCase();
+    for(const root in GEX_ROOT_TICKERS){
+      if(up.startsWith(root)) return GEX_ROOT_TICKERS[root];
+    }
+  }
+  return null;
+}
+
+function gexLoadOptionsFromRows(rows){
+  GEX_OPTIONS = gexParseGradeRows(rows);
+  const statusEl = document.getElementById('gexFileStatus');
+  if(!GEX_OPTIONS.length){
+    statusEl.textContent = 'Não consegui reconhecer o formato da grade.';
+    statusEl.style.color = 'var(--red)';
+    return;
+  }
+  const spot = gexEstimateSpot(GEX_OPTIONS);
+  if(spot) document.getElementById('gexCtlSpot').value = spot.toFixed(2);
+  if(!document.getElementById('gexCtlExpiry').value) document.getElementById('gexCtlExpiry').value = gexDefaultExpiryFriday();
+
+  let tickerNote = '';
+  const tickerField = document.getElementById('gexCtlTicker');
+  if(!tickerField.value.trim()){
+    const guess = gexGuessTicker(GEX_OPTIONS[0].callTicker, GEX_OPTIONS[0].putTicker);
+    if(guess){ tickerField.value = guess; tickerNote = ' • ativo detectado: '+guess+' (confira)'; }
+  }
+  statusEl.textContent = GEX_OPTIONS.length+' strikes carregados'+tickerNote+'.';
+  statusEl.style.color = 'var(--accent2)';
+  gexRecalc();
+}
+
+function gexDetectDelimiter(headerLine){
+  const semi = (headerLine.match(/;/g)||[]).length;
+  const comma = (headerLine.match(/,/g)||[]).length;
+  return semi >= comma ? ';' : ',';
+}
+
+document.getElementById('gexFileInput').addEventListener('change', function(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const isCsv = /\.csv$/i.test(file.name);
+  const reader = new FileReader();
+  reader.onload = function(ev){
+    try{
+      let rows;
+      if(isCsv){
+        // Lido como texto bruto (não via XLSX.read) porque o SheetJS tenta "adivinhar"
+        // números em CSV e interpreta a vírgula decimal brasileira (58,15) como separador
+        // de milhar, virando 5815 — 100x maior. Aqui a vírgula/ponto continuam como o
+        // gexParseNumBR/gexParseIV já sabem tratar. Também decodifica como Windows-1252,
+        // porque exports de corretora/Profit em CSV normalmente não vêm em UTF-8.
+        const text = new TextDecoder('windows-1252').decode(new Uint8Array(ev.target.result));
+        const lines = text.split(/\r\n|\n|\r/).filter(l => l.trim().length);
+        const delim = gexDetectDelimiter(lines[0] || '');
+        rows = lines.map(l => l.split(delim));
+      } else {
+        const data = new Uint8Array(ev.target.result);
+        const wb = XLSX.read(data, {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+      }
+      gexLoadOptionsFromRows(gexStripHeaderIfPresent(rows));
+    } catch(err){
+      const statusEl = document.getElementById('gexFileStatus');
+      statusEl.textContent = 'Erro ao ler arquivo: '+err.message;
+      statusEl.style.color = 'var(--red)';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+window.gexTogglePaste = function(){
+  const w = document.getElementById('gexPasteWrap');
+  w.style.display = w.style.display==='none' ? 'block' : 'none';
+};
+window.gexProcessPaste = function(){
+  const txt = document.getElementById('gexPasteArea').value.trim();
+  if(!txt) return;
+  const lines = txt.split('\n').map(l=>l.split('\t'));
+  gexLoadOptionsFromRows(gexStripHeaderIfPresent(lines));
+  document.getElementById('gexPasteArea').value = ''; // evita colar em cima de texto antigo na próxima vez
+  document.getElementById('gexPasteWrap').style.display = 'none';
+};
+window.gexResetAll = function(){
+  GEX_OPTIONS = [];
+  gexLastRows = [];
+  document.getElementById('gexFileInput').value = '';
+  document.getElementById('gexPasteArea').value = '';
+  document.getElementById('gexPasteWrap').style.display = 'none';
+  document.getElementById('gexCtlTicker').value = '';
+  document.getElementById('gexCtlSpot').value = '';
+  document.getElementById('gexCtlExpiry').value = '';
+  gexUpdateTickerBadge();
+  ['gexKSpot','gexKDte','gexKCallWall','gexKPutWall','gexKFlip','gexKRegime','gexKTotalGex','gexKMaxPain','gexKDex'].forEach(id=>{
+    const el = document.getElementById(id);
+    el.textContent = '—';
+    el.className = el.id === 'gexKSpot' ? 'result-value neutral' : (el.id === 'gexKCallWall' ? 'result-value pos' : (el.id === 'gexKPutWall' ? 'result-value neg' : 'result-value'));
+  });
+  document.getElementById('gexKFlipExtra').textContent = '';
+  document.getElementById('gexTableBody').innerHTML = '';
+  gexDestroyChart('oi'); gexDestroyChart('gex'); gexDestroyChart('flip');
+  document.getElementById('gexFileStatus').textContent = 'Dados limpos — pronto pra outro ativo.';
+  document.getElementById('gexFileStatus').style.color = 'var(--muted)';
+  document.getElementById('gexCalcStatus').textContent = '';
+};
+window.gexDownloadCsv = function(){
+  if(!gexLastRows.length) return;
+  const header = ['Strike','OI_Call','Delta_Call','Gamma_Call','IV_Call','OI_Put','Delta_Put','Gamma_Put','IV_Put','GEX_R$'];
+  const lines = [header.join(';')];
+  for(const r of gexLastRows){
+    lines.push([
+      r.strike.toFixed(2), r.callOI, r.callDelta!=null?r.callDelta.toFixed(4):'',
+      r.gc.toFixed(6), r.callIV!=null?r.callIV.toFixed(4):'',
+      r.putOI, r.putDelta!=null?r.putDelta.toFixed(4):'',
+      r.gp.toFixed(6), r.putIV!=null?r.putIV.toFixed(4):'',
+      r.gex.toFixed(2)
+    ].join(';'));
+  }
+  const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const tickerPart = (document.getElementById('gexCtlTicker').value.trim() || 'ativo').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'gex_'+tickerPart+'_'+document.getElementById('gexCtlExpiry').value+'.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+['gexCtlTicker','gexCtlSpot','gexCtlExpiry','gexCtlRate','gexCtlMult'].forEach(id=>{
+  document.getElementById(id).addEventListener('change', gexRecalc);
+});
+document.getElementById('gexCtlTicker').addEventListener('input', gexUpdateTickerBadge);
+
+window.gexOnThemeChange = function(){ if(GEX_OPTIONS.length) gexRecalc(); };
+})();
 </script>
 
 </body>
