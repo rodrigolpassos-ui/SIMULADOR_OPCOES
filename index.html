@@ -613,6 +613,16 @@ tr.gex-wall td{box-shadow:inset 0 0 0 1px var(--yellow);}
 </div>
 
 <div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-title">Níveis de referência</div>
+  <div style="font-size:0.62rem;color:var(--muted);margin-bottom:0.5rem;">
+    Inclui Call Wall, Put Wall, Gamma Flip, Max Pain, Spot e o <b style="color:var(--text);">GLevel 1-10</b>
+    (os 10 strikes com maior concentração de gamma) — quando dois níveis caem no mesmo strike, o rótulo se junta.
+  </div>
+  <div id="gexLevelsLadder" style="position:relative;height:640px;margin-left:6px;border-left:1px solid var(--border2);"></div>
+  <div id="gexLevelsExtra" style="font-size:0.62rem;color:var(--muted);margin-top:0.5rem;margin-left:8px;"></div>
+</div>
+
+<div class="panel" style="margin-bottom:1.25rem;">
   <div class="panel-title">Open Interest por strike</div>
   <div class="chart-wrap" style="height:280px;"><canvas id="gexChartOI"></canvas></div>
 </div>
@@ -656,9 +666,12 @@ tr.gex-wall td{box-shadow:inset 0 0 0 1px var(--yellow);}
   usando a Vol Impl de cada lado (call/put) da própria grade; strikes sem IV registrada contam gamma ≈ 0.
   <b style="color:var(--text);">Max Pain</b> é o strike (dentre os presentes na grade) que minimiza o valor total pago
   aos titulares no vencimento — heurística de mercado, não previsão. <b style="color:var(--text);">Delta Exposure (DEX)</b>
-  usa o Delta já reportado na grade (não recalculado), com a mesma convenção do GEX. Spot é auto-detectado a partir do
-  valor intrínseco das opções mais próximas do dinheiro; confira e ajuste se destoar da cotação real. Vencimento e taxa
-  de juros são estimativas editáveis. Screener educacional, não constitui recomendação de investimento.
+  usa o Delta já reportado na grade (não recalculado), com a mesma convenção do GEX. <b style="color:var(--text);">GLevel 1-10</b>
+  são os 10 strikes com maior |GEX| (call + put combinados) — uma generalização do Call Wall/Put Wall, que são só o
+  #1 de cada lado; aparecem na régua de níveis e, quando coincidem com outro nível, o rótulo se junta. Spot é
+  auto-detectado a partir do valor intrínseco das opções mais próximas do dinheiro; confira e ajuste se destoar da
+  cotação real. Vencimento e taxa de juros são estimativas editáveis. Screener educacional, não constitui
+  recomendação de investimento.
 </div>
 
 </div><!-- end viewGex -->
@@ -3080,10 +3093,91 @@ function gexRecalc(){
 
   gexRenderTable(rows, S, callWall.strike, putWall.strike);
   gexRenderCharts(rows, S, rate, T, mult, flip.nearest, callWall.strike, putWall.strike);
+  gexRenderLevelsLadder(S, callWall.strike, putWall.strike, flip, maxPain.strike, rows);
   gexLastRows = rows;
 
   statusEl.textContent = 'Calculado com '+rows.length+' strikes • vencimento em '+Math.round(days)+' dia(s) corrido(s).';
   statusEl.style.color = 'var(--accent2)';
+}
+
+// Escada vertical de níveis por preço — inspirada no estilo "call wall / put wall / gamma flip"
+// empilhado que aparece em conteúdo de GEX de mercados americanos, adaptado pra usar só os
+// níveis que a própria grade permite calcular (sem candle/preço ao vivo, que não temos aqui).
+function gexRenderLevelsLadder(S, callWallStrike, putWallStrike, flip, maxPainStrike, rows){
+  const container = document.getElementById('gexLevelsLadder');
+  const extraEl = document.getElementById('gexLevelsExtra');
+  if(!container) return;
+  container.innerHTML = '';
+  if(extraEl) extraEl.textContent = '';
+  const c = gexThemeColors();
+
+  // Níveis "clássicos" + GLevel 1-10 (maiores |GEX| da grade) entram todos na mesma escala e
+  // recebem o mesmo tratamento visual (linha completa + rótulo). Só os cruzamentos secundários
+  // de Gamma Flip ficam de fora, porque podem estar bem longe do spot e esticar o eixo à toa.
+  let levels = [];
+  if(callWallStrike!=null) levels.push({name:'Call Wall', price:callWallStrike, color:c.teal, major:true});
+  if(putWallStrike!=null) levels.push({name:'Put Wall', price:putWallStrike, color:c.red, major:true});
+  if(flip && flip.nearest!=null) levels.push({name:'Gamma Flip', price:flip.nearest, color:c.tick, major:true});
+  if(maxPainStrike!=null) levels.push({name:'Max Pain', price:maxPainStrike, color:c.yellow, major:true});
+  if(S!=null) levels.push({name:'Spot atual', price:S, color:c.legend, major:true, isSpot:true});
+
+  (rows||[]).slice().sort((a,b)=>Math.abs(b.gex)-Math.abs(a.gex)).slice(0,10).forEach((r,i)=>{
+    levels.push({name:'GLevel '+(i+1), price:r.strike, color: r.gex>=0 ? c.teal : c.red, major:true});
+  });
+  if(!levels.length) return;
+
+  if(extraEl && flip && flip.all){
+    const others = flip.all.filter(f=>f!==flip.nearest).sort((a,b)=>a-b);
+    if(others.length){
+      extraEl.textContent = 'Outros cruzamentos de gamma (fora da escala acima): R$ '+others.map(f=>f.toFixed(2)).join(' · R$ ');
+    }
+  }
+
+  const prices = levels.map(l=>l.price);
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const pad = (max-min)*0.18 || Math.max(min*0.05, 1);
+  const lo = min-pad, hi = max+pad;
+  const H = container.clientHeight || 640;
+  const yFor = p => H - ((p-lo)/(hi-lo))*H;
+
+  // Junta níveis que caem no mesmo preço (ex: Put Wall e GLevel 1 no mesmo strike) num só
+  // rótulo — evita empilhar dois textos quase idênticos por uma diferença de centavos.
+  const byPrice = new Map();
+  levels.forEach(l=>{
+    const key = l.price.toFixed(2);
+    if(byPrice.has(key)){
+      const existing = byPrice.get(key);
+      existing.name += ' / ' + l.name;
+      existing.major = existing.major || l.major;
+    } else {
+      byPrice.set(key, {...l});
+    }
+  });
+  const merged = Array.from(byPrice.values());
+
+  // resolve sobreposição de rótulos (mantém a linha na posição real, só desloca o texto)
+  const sorted = merged.sort((a,b)=>yFor(a.price)-yFor(b.price));
+  let lastLabelY = -999;
+  const minGap = 17;
+  sorted.forEach(l=>{
+    l.trueY = yFor(l.price);
+    l.labelY = l.trueY < lastLabelY + minGap ? lastLabelY + minGap : l.trueY;
+    lastLabelY = l.labelY;
+  });
+
+  // Todas as linhas primeiro, todos os rótulos depois — senão a linha de um nível pode ser
+  // desenhada por cima do texto de outro nível (a ordem no DOM decide quem fica "na frente").
+  sorted.forEach(l=>{
+    const line = document.createElement('div');
+    line.style.cssText = `position:absolute;left:0;right:0;top:${l.trueY}px;border-top:${l.isSpot?'2px solid':'1px dashed'} ${l.color};opacity:${l.major?0.85:0.4};`;
+    container.appendChild(line);
+  });
+  sorted.forEach(l=>{
+    const label = document.createElement('div');
+    label.style.cssText = `position:absolute;left:10px;top:${l.labelY-8}px;font-size:${l.major?'0.66rem':'0.56rem'};font-family:var(--mono);color:${l.color};background:var(--surface);padding:0 4px;white-space:nowrap;z-index:2;`;
+    label.textContent = l.name+' — R$ '+l.price.toFixed(2);
+    container.appendChild(label);
+  });
 }
 
 function gexRenderTable(rows, S, callWallStrike, putWallStrike){
@@ -3322,6 +3416,8 @@ window.gexResetAll = function(){
   });
   document.getElementById('gexKFlipExtra').textContent = '';
   document.getElementById('gexTableBody').innerHTML = '';
+  document.getElementById('gexLevelsLadder').innerHTML = '';
+  document.getElementById('gexLevelsExtra').textContent = '';
   gexDestroyChart('oi'); gexDestroyChart('gex'); gexDestroyChart('flip');
   document.getElementById('gexFileStatus').textContent = 'Dados limpos — pronto pra outro ativo.';
   document.getElementById('gexFileStatus').style.color = 'var(--muted)';
